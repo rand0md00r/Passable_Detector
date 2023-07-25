@@ -493,17 +493,24 @@ void Cell::updateMinZ(float z)
 void PassableDetector::clusterPointCloud() {
     // std::vector<CubeInfo> cube_infos;
 
+    if(!received_cloud_)
+    {
+        std::cerr << "Error: The input point cloud is empty!" << std::endl;
+        return;
+    }
     // 降采样点云，以提高聚类效率
-    // pcl::VoxelGrid<Point> voxel_grid;
-    // voxel_grid.setInputCloud(elevated_cloud_ptr_);
-    // voxel_grid.setLeafSize(0.1, 0.1, 0.1); // 根据需要调整leaf size
+    pcl::VoxelGrid<Point> voxel_grid;
+    voxel_grid.setInputCloud(elevated_cloud_ptr_);
+    voxel_grid.setLeafSize(0.1, 0.1, 0.1); // 根据需要调整leaf size
     // pcl::PointCloud<Point>::Ptr downsampled_cloud_ptr(new pcl::PointCloud<Point>());
-    // voxel_grid.filter(*downsampled_cloud_ptr);
+    PointCloud::Ptr downsampled_cloud_ptr(new PointCloud);
+    voxel_grid.filter(*downsampled_cloud_ptr);
+    // downsampled_cloud_ptr->header.
 
     // 创建一个KD树对象，用于搜索聚类时的近邻点
     pcl::search::KdTree<Point>::Ptr kd_tree(new pcl::search::KdTree<Point>());
-    // kd_tree->setInputCloud(downsampled_cloud_ptr);
-    kd_tree->setInputCloud(elevated_cloud_ptr_);
+    kd_tree->setInputCloud(downsampled_cloud_ptr);
+    // kd_tree->setInputCloud(elevated_cloud_ptr_);
 
     // 使用欧几里德聚类算法
     std::vector<pcl::PointIndices> cluster_indices;

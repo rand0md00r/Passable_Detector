@@ -17,12 +17,12 @@
 using namespace std;
 
 const int num_channel = 80;
-const int num_bin = 120;
-const float r_min = 0.3;
-const float r_max = 30;
-const float h_min = -0.95;
-const float h_max = 1.0;
-const float h_diff = 0.4;
+const int num_bin    = 120;
+const float r_min    = 0.3;
+const float r_max    = 30;
+const float h_min    = -0.95;
+const float h_max    = 1.0;
+const float h_diff   = 0.4;
 const float h_sensor = 0.95;
 
 typedef pcl::PointXYZ Point;
