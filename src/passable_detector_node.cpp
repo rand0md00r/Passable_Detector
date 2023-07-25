@@ -12,21 +12,29 @@ PassableDetector::PassableDetector(ros::NodeHandle& nh)
     pnh_.param("frequency",   frequency_,  10);
     pnh_.param("num_channel", num_channel_, 80);
     pnh_.param("num_bin",     num_bin_,     120);
+
     pnh_.param("r_min",       r_min,       0.3);
-    pnh_.param("r_max",       r_max,       10.0);
-    pnh_.param("h_min",       h_min,       -2.0);
+    pnh_.param("r_max",       r_max,       20.0);
+    pnh_.param("h_min",       h_min,       -0.95);
     pnh_.param("h_max",       h_max,       1.0);
-    pnh_.param("h_diff",      h_diff,      0.01);
-    pnh_.param("h_sensor",    h_sensor,    0.5);
+    pnh_.param("h_diff",      h_diff,      0.1);
+    pnh_.param("h_sensor",    h_sensor,    0.95);
+         
+    pnh_.param("obs_length",  obs_length_, 1.5);
+    pnh_.param("obs_width",   obs_width_,  1.5);
+    pnh_.param("obs_height",  obs_height_, 1.5);
+    pnh_.param("obs_height",  obs_min_height_, -0.95);
+    pnh_.param("obs_height",  obs_max_height_, 0.5);
 
     // Sub && Pub
     cloud_sub_  = pnh_.subscribe("/velodyne_points2", 1, &PassableDetector::pointCloudCallback, this);
     map_sub_    = pnh_.subscribe("/map", 1, &PassableDetector::mapCallback, this);
 
-    map_pub_    = pnh_.advertise<nav_msgs::OccupancyGrid>("/passable_grid", 1);
+    map_pub_    = pnh_.advertise<nav_msgs::OccupancyGrid>("/passable_grid", 1);     // TODO
     ground_pub_ = pnh_.advertise<sensor_msgs::PointCloud2>("/ground_cloud", 1);
     elevat_pub_ = pnh_.advertise<sensor_msgs::PointCloud2>("/elevated_cloud", 1);
     marker_pub_ = pnh_.advertise<visualization_msgs::MarkerArray>("/obstacle", 1);
+    obs_map_pub_= pnh_.advertise<nav_msgs::OccupancyGrid>("/obstacle_grid", 1);
 
 
     // Timer for process
@@ -163,7 +171,12 @@ void PassableDetector::process(const ros::TimerEvent&)
     publishGroundCloud();
     publishElevatCloud();
     publishFusedMap();
+    clusterPointCloud();
     visualizeCubes();
+    
+    elevated_cloud_ptr_->clear();
+    ground_cloud_ptr_->clear();
+    cube_infos_.clear();
 }
 
 int PassableDetector::getThreadNumbers()
@@ -174,7 +187,7 @@ int PassableDetector::getThreadNumbers()
 void PassableDetector::pointCloudCallback(const sensor_msgs::PointCloud2ConstPtr& cloud_msg)
 {
     pcl::fromROSMsg(*cloud_msg, *raw_cloud_ptr_);
-    frame_id_ = cloud_msg->header.frame_id;
+    point_frame_id_ = cloud_msg->header.frame_id;
     received_cloud_ = true;
 }
 
@@ -189,6 +202,12 @@ void PassableDetector::mapCallback(const nav_msgs::OccupancyGridConstPtr& map_ms
     fused_map_.info.width = map_msg->info.width;
     fused_map_.info.resolution = map_msg->info.resolution;
     fused_map_.info.origin = map_msg->info.origin;
+
+    obs_map_.header.frame_id = "base_link";
+    obs_map_.info.height = map_msg->info.height;
+    obs_map_.info.width = map_msg->info.width;
+    obs_map_.info.resolution = map_msg->info.resolution;
+    obs_map_.info.origin = map_msg->info.origin;
 }
 
 void PassableDetector::publishGroundCloud()
@@ -202,9 +221,9 @@ void PassableDetector::publishGroundCloud()
     pcl::toROSMsg(*ground_cloud_ptr_, ground_cloud_msg);
 
     ground_cloud_msg.header.stamp = ros::Time::now();
-    ground_cloud_msg.header.frame_id = frame_id_;  // replace this with the correct frame
+    ground_cloud_msg.header.frame_id = point_frame_id_;  // replace this with the correct frame
     ground_pub_.publish(ground_cloud_msg);
-    ground_cloud_ptr_->clear();
+    
 }
 
 void PassableDetector::publishElevatCloud()
@@ -218,9 +237,9 @@ void PassableDetector::publishElevatCloud()
     pcl::toROSMsg(*elevated_cloud_ptr_, elevated_cloud_msg);
 
     elevated_cloud_msg.header.stamp = ros::Time::now();
-    elevated_cloud_msg.header.frame_id = frame_id_;  // replace this with the correct frame
+    elevated_cloud_msg.header.frame_id = point_frame_id_;  // replace this with the correct frame
     elevat_pub_.publish(elevated_cloud_msg);
-    elevated_cloud_ptr_->clear();
+    
 }
 
 void PassableDetector::publishFusedMap()
@@ -238,6 +257,19 @@ void PassableDetector::publishFusedMap()
     }
 
     map_pub_.publish(fused_map_);
+
+    if (obs_map_.data.empty() && received_map_)
+    {
+        ROS_WARN("Attempted to publish empty fused map.");
+        return;
+    }
+
+    if (obs_map_.info.width * obs_map_.info.height != obs_map_.data.size()) 
+    {
+        ROS_ERROR("Map size does not match width and height.");
+        return;
+    }
+    obs_map_pub_.publish(obs_map_);
 }
 
 
@@ -258,9 +290,11 @@ void PassableDetector::projectPointCloudToMap() {
 
     // 初始化地图数据
     fused_map_.data.resize(map_width * map_height, -1);  // -1 表示未知
+    obs_map_.data.resize(map_width * map_height, -1);
 
     // 遍历点云数据
-    for (const auto& point : *ground_cloud_ptr_) {
+    for (const auto& point : *ground_cloud_ptr_) 
+    {
         // 计算点云数据在地图上的位置
         int x = round((point.x - origin_x) / map_resolution);
         int y = round((point.y - origin_y) / map_resolution);
@@ -269,6 +303,18 @@ void PassableDetector::projectPointCloudToMap() {
         if (x >= 0 && x < map_width && y >= 0 && y < map_height) {
             // 将该位置标记为已占用
             fused_map_.data[y * map_width + x] = 0;  // 100 表示已占用
+        }
+    }
+    for (const auto& point: *elevated_cloud_ptr_)
+    {
+        // 计算点云数据在地图上的位置
+        int x = round((point.x - origin_x) / map_resolution);
+        int y = round((point.y - origin_y) / map_resolution);
+
+        // 检查点是否在地图范围内
+        if (x >= 0 && x < map_width && y >= 0 && y < map_height) {
+            // 将该位置标记为已占用
+            obs_map_.data[y * map_width + x] = 100;  // 100 表示已占用
         }
     }
 }
@@ -448,26 +494,28 @@ void PassableDetector::clusterPointCloud() {
     // std::vector<CubeInfo> cube_infos;
 
     // 降采样点云，以提高聚类效率
-    pcl::VoxelGrid<Point> voxel_grid;
-    voxel_grid.setInputCloud(elevated_cloud_ptr_);
-    voxel_grid.setLeafSize(0.1, 0.1, 0.1); // 根据需要调整leaf size
-    pcl::PointCloud<Point>::Ptr downsampled_cloud_ptr(new pcl::PointCloud<Point>());
-    voxel_grid.filter(*downsampled_cloud_ptr);
+    // pcl::VoxelGrid<Point> voxel_grid;
+    // voxel_grid.setInputCloud(elevated_cloud_ptr_);
+    // voxel_grid.setLeafSize(0.1, 0.1, 0.1); // 根据需要调整leaf size
+    // pcl::PointCloud<Point>::Ptr downsampled_cloud_ptr(new pcl::PointCloud<Point>());
+    // voxel_grid.filter(*downsampled_cloud_ptr);
 
     // 创建一个KD树对象，用于搜索聚类时的近邻点
     pcl::search::KdTree<Point>::Ptr kd_tree(new pcl::search::KdTree<Point>());
-    kd_tree->setInputCloud(downsampled_cloud_ptr);
+    // kd_tree->setInputCloud(downsampled_cloud_ptr);
+    kd_tree->setInputCloud(elevated_cloud_ptr_);
 
     // 使用欧几里德聚类算法
     std::vector<pcl::PointIndices> cluster_indices;
     pcl::EuclideanClusterExtraction<Point> euclidean_cluster;
     euclidean_cluster.setClusterTolerance(0.5); // 根据需要调整聚类的距离阈值
     euclidean_cluster.setMinClusterSize(10);    // 根据需要调整聚类的最小点数
-    euclidean_cluster.setInputCloud(downsampled_cloud_ptr);
+    euclidean_cluster.setMaxClusterSize(10000);
+    euclidean_cluster.setInputCloud(elevated_cloud_ptr_);
+
     euclidean_cluster.setSearchMethod(kd_tree);
     euclidean_cluster.extract(cluster_indices);
     
-
     // 遍历聚类结果，获取每个聚类的立方体信息
     for (const auto& cluster_index : cluster_indices) {
         CubeInfo cube_info;
@@ -496,10 +544,19 @@ void PassableDetector::clusterPointCloud() {
         cube_info.center.y = (cube_info.min_point.y + cube_info.max_point.y) / 2;
         cube_info.center.z = (cube_info.min_point.z + cube_info.max_point.z) / 2;
         cube_info.length = cube_info.max_point.x - cube_info.min_point.x;
-        cube_info.width = cube_info.max_point.y - cube_info.min_point.y;
+        cube_info.width  = cube_info.max_point.y - cube_info.min_point.y;
         cube_info.height = cube_info.max_point.z - cube_info.min_point.z;
+
         // 将立方体信息添加到向量中
-        cube_infos_.push_back(cube_info);
+        if(cube_info.length <= obs_length_ 
+            && cube_info.width <= obs_width_ 
+            && cube_info.width <= obs_height_
+            && cube_info.max_point.z >= obs_min_height_
+            && cube_info.min_point.z <= obs_max_height_)
+        {
+            cube_infos_.push_back(cube_info);
+        }
+        
     }
 }
 
@@ -513,7 +570,7 @@ void PassableDetector::visualizeCubes() {
     if(cube_infos_.empty()) return;
     for (const auto& cube_info : cube_infos_) {
         visualization_msgs::Marker marker;
-        marker.header.frame_id = "base_link";
+        marker.header.frame_id = point_frame_id_;
         marker.header.stamp = ros::Time::now();
         marker.ns = "cubes";
         marker.id = marker_id;
@@ -542,7 +599,7 @@ void PassableDetector::visualizeCubes() {
     }
 
     marker_pub_.publish(marker_array);
-    cube_infos_.clear();
+    
 }
 
 

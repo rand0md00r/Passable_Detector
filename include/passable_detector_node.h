@@ -69,21 +69,22 @@ class PassableDetector
 private:
     ros::NodeHandle pnh_;
     ros::Subscriber cloud_sub_, map_sub_;
-    ros::Publisher map_pub_, ground_pub_, elevat_pub_, marker_pub_;
+    ros::Publisher map_pub_, ground_pub_, elevat_pub_, marker_pub_, obs_map_pub_;
     ros::Timer processer_;
 
     PointCloud::Ptr raw_cloud_ptr_;
     PointCloud::Ptr elevated_cloud_ptr_;
     PointCloud::Ptr ground_cloud_ptr_;
 
-    nav_msgs::OccupancyGrid raw_map_, fused_map_;
+    nav_msgs::OccupancyGrid raw_map_, fused_map_, obs_map_;
 
     bool received_cloud_, received_map_;
     int theread_num_, frequency_, num_channel_, num_bin_;
     double r_min, r_max, h_min, h_max, h_diff, h_sensor;            // for ground remove
-    string frame_id_;
+    string point_frame_id_;
 
     std::vector<CubeInfo> cube_infos_;
+    double obs_length_, obs_width_, obs_height_, obs_min_height_, obs_max_height_;
 
 public:
     PassableDetector(ros::NodeHandle& nh);
